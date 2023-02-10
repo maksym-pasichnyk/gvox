@@ -17,6 +17,10 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#elif __APPLE__
+#include <unistd.h>
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
 #endif
 #endif
 
@@ -89,6 +93,9 @@ auto get_exe_path() -> std::filesystem::path {
     readlink("/proc/self/exe", out_str, 511);
 #elif _WIN32
     GetModuleFileName(nullptr, out_str, 511);
+#elif __APPLE__
+    uint32_t size = 512;
+    _NSGetExecutablePath(out_str, &size);
 #endif
     auto result = std::filesystem::path(out_str);
     if (!std::filesystem::is_directory(result)) {
@@ -271,8 +278,27 @@ void gvox_load_format(GVoxContext *ctx, char const *format_loader_name) {
             .destroy_payload = (GVoxFormatDestroyPayloadFunc)GetProcAddress(dll_handle, destroy_payload_str.c_str()),
             .parse_payload = (GVoxFormatParsePayloadFunc)GetProcAddress(dll_handle, parse_payload_str.c_str()),
         };
-#endif
+#elif __APPLE__
+        filename = "lib" + filename + ".dylib";
+        void *so_handle = dlopen(filename.c_str(), RTLD_LAZY);
+        if (!so_handle) {
+            auto path = get_exe_path() / filename;
+            so_handle = dlopen(path.string().c_str(), RTLD_LAZY);
+        }
+        if (!so_handle) {
+            ctx->errors.push_back({"Failed to load Format .so at [" + filename + "]", GVOX_ERROR_FAILED_TO_LOAD_FORMAT});
+            return;
+        }
+        GVoxFormatLoaderInfo format_loader_info = {
+            .name_str = format_loader_name,
+            .create_context = (GVoxFormatCreateContextFunc)dlsym(so_handle, create_context_str.c_str()),
+            .destroy_context = (GVoxFormatDestroyContextFunc)dlsym(so_handle, destroy_context_str.c_str()),
+            .create_payload = (GVoxFormatCreatePayloadFunc)dlsym(so_handle, create_payload_str.c_str()),
+            .destroy_payload = (GVoxFormatDestroyPayloadFunc)dlsym(so_handle, destroy_payload_str.c_str()),
+            .parse_payload = (GVoxFormatParsePayloadFunc)dlsym(so_handle, parse_payload_str.c_str()),
+        };
         gvox_register_format(ctx, &format_loader_info);
+#endif
     }
 #endif
 }
